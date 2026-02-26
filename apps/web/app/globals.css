@@ -24,3 +24,15 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans);
 }
+
+/* 모바일 터치 최적화 */
+@media (pointer: coarse) {
+  /* 터치 시 highlight 제거 */
+  button,
+  a,
+  input,
+  textarea,
+  select {
+    -webkit-tap-highlight-color: transparent;
+  }
+}

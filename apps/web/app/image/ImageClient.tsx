@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import { imageAnalyze } from "@/lib/api";
 
 type ImageStatus = "idle" | "loading" | "processing" | "done" | "error";
+type ImageMode = "client" | "api";
 
 /** max_position_embeddings(2048) - 이미지(729) - 고정문구(~20) - 생성(128) ≈ 1170 토큰 ≈ 1500자 */
 const MAX_QUESTION_LENGTH = 1500;
@@ -31,10 +33,12 @@ async function translateWithChrome(text: string, from: "ko" | "en", to: "ko" | "
 }
 
 export function ImageClient() {
+  const [mode, setMode] = useState<ImageMode>("client");
   const [image, setImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [question, setQuestion] = useState("이 사진 속 상황이 뭐야?");
   const [answer, setAnswer] = useState<string>("");
+  const [apiResults, setApiResults] = useState<{ type: string; data: Record<string, unknown> }[] | null>(null);
   const [translatedQuestionEn, setTranslatedQuestionEn] = useState<string | null>(null);
   const [status, setStatus] = useState<ImageStatus>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -79,12 +83,20 @@ export function ImageClient() {
 
   const askImage = useCallback(async () => {
     if (!image) return;
-    if (question.length > MAX_QUESTION_LENGTH) return;
+    if (mode === "client" && question.length > MAX_QUESTION_LENGTH) return;
     setError(null);
     setAnswer("");
+    setApiResults(null);
     setTranslatedQuestionEn(null);
     const start = performance.now();
     try {
+      if (mode === "api") {
+        setStatus("processing");
+        const res = await imageAnalyze(image);
+        setApiResults(res.results);
+        setStatus("done");
+        return;
+      }
       const loaded = await loadModel();
       if (!loaded) throw new Error("모델 로드 실패");
       setStatus("processing");
@@ -146,7 +158,7 @@ export function ImageClient() {
     } finally {
       setElapsedMs(Math.round(performance.now() - start));
     }
-  }, [image, question, loadModel]);
+  }, [mode, image, question, loadModel]);
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -157,6 +169,7 @@ export function ImageClient() {
       });
       setImage(file);
       setAnswer("");
+      setApiResults(null);
       setStatus("idle");
       setError(null);
       setElapsedMs(null);
@@ -173,6 +186,7 @@ export function ImageClient() {
       });
       setImage(file);
       setAnswer("");
+      setApiResults(null);
       setStatus("idle");
       setError(null);
       setElapsedMs(null);
@@ -186,6 +200,7 @@ export function ImageClient() {
     setImage(null);
     setImagePreview(null);
     setAnswer("");
+    setApiResults(null);
     setTranslatedQuestionEn(null);
     setStatus("idle");
     setError(null);
@@ -194,30 +209,62 @@ export function ImageClient() {
 
   return (
     <div className="space-y-6">
-      {/* Engine info */}
-      <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm dark:border-slate-700 dark:bg-slate-800/50">
-        <p className="font-medium text-slate-700 dark:text-slate-300">비전 분석 (Vision Analysis)</p>
-        <p className="mt-1 text-slate-600 dark:text-slate-400">
-          Moondream2 VLM — 이미지에 대해 자연어로 질문하고 답변을 받습니다. WebGPU/WASM으로 브라우저에서 실행됩니다.
-        </p>
-        <p className="mt-1 text-xs text-slate-500 dark:text-slate-500">
-          참고: WebLLM은 비전 모델 미지원으로 Transformers.js + Moondream2 사용. 한글 질문 시 Chrome 138+의 Translator API로 질문(ko→en)·답변(en→ko) 자동 번역.
-        </p>
-        <label className="mt-3 flex cursor-pointer items-center gap-2">
-          <input
-            type="checkbox"
-            checked={useWebGpu}
-            onChange={(e) => {
-              setUseWebGpu(e.target.checked);
-              modelRef.current = null;
-            }}
-            className="h-4 w-4 rounded accent-teal-600"
-          />
-          <span className="text-slate-700 dark:text-slate-300">WebGPU 사용 (GPU 가속)</span>
-        </label>
-      </div>
+      {/* Mode selection */}
+      <fieldset className="rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/50">
+        <legend className="px-1 font-medium text-slate-700 dark:text-slate-300">처리 방식</legend>
+        <div className="mt-2 space-y-2">
+          <label className="flex cursor-pointer items-center gap-3">
+            <input
+              type="radio"
+              name="image-mode"
+              value="client"
+              checked={mode === "client"}
+              onChange={() => setMode("client")}
+              className="h-4 w-4 accent-teal-600"
+            />
+            <span className="text-slate-700 dark:text-slate-300">클라이언트 (Moondream2 VLM)</span>
+            <span className="text-sm text-slate-500 dark:text-slate-500">
+              — 이미지에 대해 질문·답변, WebGPU
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-center gap-3">
+            <input
+              type="radio"
+              name="image-mode"
+              value="api"
+              checked={mode === "api"}
+              onChange={() => setMode("api")}
+              className="h-4 w-4 accent-teal-600"
+            />
+            <span className="text-slate-700 dark:text-slate-300">API (서버)</span>
+            <span className="text-sm text-slate-500 dark:text-slate-500">
+              — apps/api 백엔드 (크기, 포맷, 인사이트)
+            </span>
+          </label>
+        </div>
+        {mode === "client" && (
+          <p className="mt-3 text-xs text-slate-500 dark:text-slate-500">
+            한글 질문 시 Chrome 138+ Translator API로 자동 번역
+          </p>
+        )}
+        {mode === "client" && (
+          <label className="mt-3 flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={useWebGpu}
+              onChange={(e) => {
+                setUseWebGpu(e.target.checked);
+                modelRef.current = null;
+              }}
+              className="h-4 w-4 rounded accent-teal-600"
+            />
+            <span className="text-slate-700 dark:text-slate-300">WebGPU 사용 (GPU 가속)</span>
+          </label>
+        )}
+      </fieldset>
 
-      {/* Question input */}
+      {/* Question input (client mode only) */}
+      {mode === "client" && (
       <div>
         <div className="mb-1 flex items-center justify-between">
           <label htmlFor="vision-question" className="block text-sm font-medium text-slate-700 dark:text-slate-300">
@@ -239,6 +286,7 @@ export function ImageClient() {
           className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-slate-800 transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/20 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:focus:border-teal-400"
         />
       </div>
+      )}
 
       {/* Dropzone */}
       <div
@@ -278,20 +326,27 @@ export function ImageClient() {
       <div className="flex gap-3">
         <button
           onClick={askImage}
-          disabled={!image || question.length > MAX_QUESTION_LENGTH || status === "loading" || status === "processing"}
-          className="rounded-lg bg-teal-600 px-5 py-2.5 font-medium text-white transition hover:bg-teal-500 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={
+            !image ||
+            (mode === "client" && question.length > MAX_QUESTION_LENGTH) ||
+            status === "loading" ||
+            status === "processing"
+          }
+          className="min-h-[44px] rounded-lg bg-teal-600 px-5 py-2.5 font-medium text-white transition hover:bg-teal-500 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-0"
         >
           {status === "loading"
             ? "모델 로딩…"
             : status === "processing"
               ? "분석 중…"
-              : "질문하기"}
+              : mode === "api"
+                ? "분석"
+                : "질문하기"}
         </button>
         {image && (
           <button
             onClick={reset}
             disabled={status === "loading" || status === "processing"}
-            className="rounded-lg border border-slate-300 bg-white px-5 py-2.5 font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+            className="min-h-[44px] rounded-lg border border-slate-300 bg-white px-5 py-2.5 font-medium text-slate-700 transition hover:bg-slate-50 active:scale-[0.98] disabled:opacity-50 sm:min-h-0 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
           >
             초기화
           </button>
@@ -299,7 +354,7 @@ export function ImageClient() {
       </div>
 
       {/* Result */}
-      {(answer || error) && (
+      {(answer || apiResults || error) && (
         <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800/50">
           {translatedQuestionEn && (
             <div className="mb-4 rounded-lg border border-amber-200/60 bg-amber-50/50 py-2.5 px-3 text-sm dark:border-amber-800/40 dark:bg-amber-900/20">
@@ -322,6 +377,15 @@ export function ImageClient() {
           </div>
           {error ? (
             <p className="text-red-600 dark:text-red-400">{error}</p>
+          ) : apiResults ? (
+            <div className="space-y-3">
+              {apiResults.map((r, i) => (
+                <div key={i} className="rounded-lg bg-slate-50 p-3 text-sm dark:bg-slate-900">
+                  <span className="font-medium text-teal-600 dark:text-teal-400">[{r.type}]</span>{" "}
+                  {JSON.stringify(r.data)}
+                </div>
+              ))}
+            </div>
           ) : (
             <p className="whitespace-pre-wrap text-slate-800 dark:text-slate-200">{answer}</p>
           )}

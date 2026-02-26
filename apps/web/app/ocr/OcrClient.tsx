@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { createWorker } from "tesseract.js";
+import { ocrUpload, ocrTaskResult } from "@/lib/api";
 
-type OcrEngineChoice = "auto" | "prompt-api" | "tesseract";
-type OcrEngineUsed = "prompt-api" | "tesseract" | null;
+type OcrEngineChoice = "auto" | "prompt-api" | "tesseract" | "api";
+type OcrEngineUsed = "prompt-api" | "tesseract" | "api" | null;
 type OcrStatus = "idle" | "checking" | "processing" | "done" | "error";
 
 export function OcrClient() {
@@ -83,7 +84,8 @@ export function OcrClient() {
     setStatus("processing");
     const start = performance.now();
 
-    const resolveEngine = async (): Promise<"prompt-api" | "tesseract"> => {
+    const resolveEngine = async (): Promise<"prompt-api" | "tesseract" | "api"> => {
+      if (engineChoice === "api") return "api";
       if (engineChoice === "tesseract") return "tesseract";
       if (engineChoice === "prompt-api") return "prompt-api";
       const available = promptApiAvailable ?? (await checkPromptApi());
@@ -94,7 +96,21 @@ export function OcrClient() {
       const engineToUse = await resolveEngine();
       let text = "";
 
-      if (engineToUse === "prompt-api") {
+      if (engineToUse === "api") {
+        setEngine("api");
+        const { task_id } = await ocrUpload(image);
+        const pollInterval = 500;
+        const maxAttempts = 120;
+        for (let i = 0; i < maxAttempts; i++) {
+          const data = await ocrTaskResult(task_id);
+          if ("raw_text" in data) {
+            text = (data as { raw_text: string }).raw_text ?? "";
+            break;
+          }
+          await new Promise((r) => setTimeout(r, pollInterval));
+        }
+        if (!text) text = "(처리 시간 초과 또는 결과 없음)";
+      } else if (engineToUse === "prompt-api") {
         setEngine("prompt-api");
         try {
           text = await runWithPromptApi(image);
@@ -216,6 +232,20 @@ export function OcrClient() {
             <span className="text-slate-700 dark:text-slate-300">Tesseract.js</span>
             <span className="text-sm text-slate-500 dark:text-slate-500">— 대부분 브라우저 지원</span>
           </label>
+          <label className="flex cursor-pointer items-center gap-3">
+            <input
+              type="radio"
+              name="engine"
+              value="api"
+              checked={engineChoice === "api"}
+              onChange={() => setEngineChoice("api")}
+              className="h-4 w-4 accent-teal-600"
+            />
+            <span className="text-slate-700 dark:text-slate-300">API (서버)</span>
+            <span className="text-sm text-slate-500 dark:text-slate-500">
+              — apps/api 백엔드 (EasyOCR, Celery)
+            </span>
+          </label>
         </div>
         <p className="mt-3 text-xs text-slate-500 dark:text-slate-500">
           Prompt API: Chrome에서{" "}
@@ -263,7 +293,7 @@ export function OcrClient() {
         <button
           onClick={processImage}
           disabled={!image || status === "processing"}
-          className="rounded-lg bg-teal-600 px-5 py-2.5 font-medium text-white transition hover:bg-teal-500 disabled:cursor-not-allowed disabled:opacity-50"
+          className="min-h-[44px] rounded-lg bg-teal-600 px-5 py-2.5 font-medium text-white transition hover:bg-teal-500 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-0"
         >
           {status === "processing" ? "처리 중…" : "텍스트 추출"}
         </button>
@@ -271,7 +301,7 @@ export function OcrClient() {
           <button
             onClick={reset}
             disabled={status === "processing"}
-            className="rounded-lg border border-slate-300 bg-white px-5 py-2.5 font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+            className="min-h-[44px] rounded-lg border border-slate-300 bg-white px-5 py-2.5 font-medium text-slate-700 transition hover:bg-slate-50 active:scale-[0.98] disabled:opacity-50 sm:min-h-0 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
           >
             초기화
           </button>
@@ -283,7 +313,13 @@ export function OcrClient() {
         <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800/50">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-sm font-medium text-slate-600 dark:text-slate-400">
-              {engine === "prompt-api" ? "Prompt API (Gemini Nano)" : engine === "tesseract" ? "Tesseract.js" : ""}
+              {engine === "prompt-api"
+                ? "Prompt API (Gemini Nano)"
+                : engine === "tesseract"
+                  ? "Tesseract.js"
+                  : engine === "api"
+                    ? "API (서버)"
+                    : ""}
               {elapsedMs != null && (
                 <span className="ml-2 text-slate-400 dark:text-slate-500">({elapsedMs}ms)</span>
               )}
