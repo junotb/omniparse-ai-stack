@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { agentQuery } from "@/lib/api";
 
 type AgentStatus = "idle" | "checking" | "processing" | "done" | "error";
+type AgentMode = "client" | "api";
 
 const DEFAULT_INSTRUCTION = "날짜만 뽑아서 JSON 배열로 만들어";
 const DEFAULT_INPUT = `2024년 3월 15일에 회의가 예정되어 있습니다.
@@ -10,9 +12,11 @@ const DEFAULT_INPUT = `2024년 3월 15일에 회의가 예정되어 있습니다
 작성일: 2024-03-10`;
 
 export function AgentClient() {
+  const [mode, setMode] = useState<AgentMode>("client");
   const [instruction, setInstruction] = useState(DEFAULT_INSTRUCTION);
   const [inputText, setInputText] = useState(DEFAULT_INPUT);
   const [result, setResult] = useState<string>("");
+  const [modelUsed, setModelUsed] = useState<string | null>(null);
   const [promptApiAvailable, setPromptApiAvailable] = useState<boolean | null>(null);
   const [status, setStatus] = useState<AgentStatus>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -35,17 +39,27 @@ export function AgentClient() {
 
   const execute = useCallback(async () => {
     if (!inputText.trim()) return;
-    if (!promptApiAvailable) {
+    if (mode === "client" && !promptApiAvailable) {
       setError("Chrome Prompt API(Gemini Nano)를 사용할 수 없습니다. Chrome 138+에서 #prompt-api-for-gemini-nano-multimodal-input 플래그를 활성화해 주세요.");
       return;
     }
 
     setError(null);
     setResult("");
+    setModelUsed(null);
     setStatus("processing");
     const start = performance.now();
 
     try {
+      if (mode === "api") {
+        const question = `${instruction}\n\n처리할 텍스트:\n${inputText}`;
+        const res = await agentQuery(question, { raw_text: inputText });
+        setResult(res.answer.trim() || "(결과 없음)");
+        setModelUsed(res.model ?? null);
+        setStatus("done");
+        return;
+      }
+
       const LM = (window as Window & {
         LanguageModel: {
           create: (opts?: object) => Promise<{
@@ -88,10 +102,11 @@ export function AgentClient() {
     } finally {
       setElapsedMs(Math.round(performance.now() - start));
     }
-  }, [instruction, inputText, promptApiAvailable]);
+  }, [mode, instruction, inputText, promptApiAvailable]);
 
   const reset = useCallback(() => {
     setResult("");
+    setModelUsed(null);
     setStatus("idle");
     setError(null);
     setElapsedMs(null);
@@ -99,22 +114,54 @@ export function AgentClient() {
 
   return (
     <div className="space-y-6">
-      {/* Engine info */}
-      <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm dark:border-slate-700 dark:bg-slate-800/50">
-        <p className="font-medium text-slate-700 dark:text-slate-300">Self-Planning Agent (Gemini Nano)</p>
-        <p className="mt-1 text-slate-600 dark:text-slate-400">
-          브라우저 내장 AI로 자연어 지시를 실행합니다. 모델 다운로드 없이 0.5초 내 응답이 가능합니다.
+      {/* Mode selection */}
+      <fieldset className="rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/50">
+        <legend className="px-1 font-medium text-slate-700 dark:text-slate-300">처리 방식</legend>
+        <div className="mt-2 space-y-2">
+          <label
+            className={`flex items-center gap-3 ${promptApiAvailable === false ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
+          >
+            <input
+              type="radio"
+              name="agent-mode"
+              value="client"
+              checked={mode === "client"}
+              onChange={() => setMode("client")}
+              disabled={promptApiAvailable === false}
+              className="h-4 w-4 accent-teal-600"
+            />
+            <span className="text-slate-700 dark:text-slate-300">클라이언트 (Gemini Nano)</span>
+            <span className="text-sm text-slate-500 dark:text-slate-500">
+              — 브라우저 내장 AI
+              {promptApiAvailable === false && (
+                <span className="ml-1 text-amber-600 dark:text-amber-400">(사용 불가)</span>
+              )}
+              {promptApiAvailable === true && (
+                <span className="ml-1 text-teal-600 dark:text-teal-400">(사용 가능)</span>
+              )}
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-center gap-3">
+            <input
+              type="radio"
+              name="agent-mode"
+              value="api"
+              checked={mode === "api"}
+              onChange={() => setMode("api")}
+              className="h-4 w-4 accent-teal-600"
+            />
+            <span className="text-slate-700 dark:text-slate-300">API (서버)</span>
+            <span className="text-sm text-slate-500 dark:text-slate-500">
+              — apps/api 백엔드 (LangChain / OpenAI)
+            </span>
+          </label>
+        </div>
+        <p className="mt-3 text-xs text-slate-500 dark:text-slate-500">
+          클라이언트: Chrome 138+ 및{" "}
+          <code className="rounded bg-slate-200 px-1 dark:bg-slate-700">#prompt-api-for-gemini-nano-multimodal-input</code>
+          필요
         </p>
-        <p className="mt-1 text-xs text-slate-500 dark:text-slate-500">
-          Chrome 138+ 및 <code className="rounded bg-slate-200 px-1 dark:bg-slate-700">#prompt-api-for-gemini-nano-multimodal-input</code> 플래그 필요.
-          {promptApiAvailable === false && (
-            <span className="ml-1 font-medium text-amber-600 dark:text-amber-400">(현재 사용 불가)</span>
-          )}
-          {promptApiAvailable === true && (
-            <span className="ml-1 text-teal-600 dark:text-teal-400">(사용 가능)</span>
-          )}
-        </p>
-      </div>
+      </fieldset>
 
       {/* Instruction */}
       <div>
@@ -150,8 +197,12 @@ export function AgentClient() {
       <div className="flex gap-3">
         <button
           onClick={execute}
-          disabled={!inputText.trim() || status === "processing" || promptApiAvailable === false}
-          className="rounded-lg bg-teal-600 px-5 py-2.5 font-medium text-white transition hover:bg-teal-500 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={
+            !inputText.trim() ||
+            status === "processing" ||
+            (mode === "client" && promptApiAvailable === false)
+          }
+          className="min-h-[44px] rounded-lg bg-teal-600 px-5 py-2.5 font-medium text-white transition hover:bg-teal-500 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-0"
         >
           {status === "processing" ? "실행 중…" : "실행"}
         </button>
@@ -159,7 +210,7 @@ export function AgentClient() {
           <button
             onClick={reset}
             disabled={status === "processing"}
-            className="rounded-lg border border-slate-300 bg-white px-5 py-2.5 font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+            className="min-h-[44px] rounded-lg border border-slate-300 bg-white px-5 py-2.5 font-medium text-slate-700 transition hover:bg-slate-50 active:scale-[0.98] disabled:opacity-50 sm:min-h-0 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
           >
             초기화
           </button>
@@ -172,6 +223,7 @@ export function AgentClient() {
           <div className="mb-2 flex items-center justify-between">
             <span className="text-sm font-medium text-slate-600 dark:text-slate-400">
               결과
+              {modelUsed && <span className="ml-2 text-teal-600 dark:text-teal-400">[{modelUsed}]</span>}
               {elapsedMs != null && (
                 <span className="ml-2 text-slate-400 dark:text-slate-500">({elapsedMs}ms)</span>
               )}
